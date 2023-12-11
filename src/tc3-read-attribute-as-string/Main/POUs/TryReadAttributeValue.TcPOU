@@ -1,0 +1,189 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="TryReadAttributeValue" Id="{edb11de3-facd-4f46-b4bd-88c64e7ff1ff}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION TryReadAttributeValue : BOOL
+VAR_INPUT
+	SymbolName : T_MAXSTRING;
+	AttributeName : T_MAXSTRING;
+	DestinationAddress : PVOID;
+	DestinationSize : UDINT;
+END_VAR
+VAR
+	hr : HRESULT;
+	appInfo : ITcIecApplicationInfo;
+	symbolInfoLength : UDINT;
+	pSymbolInfo : POINTER TO BYTE;
+	symbolInfoNameLength : UINT;
+	symbolInfoDatatypeLength : UINT;
+	symbolInfoCommentLength : UINT;
+	attributeCountOffset : UINT;
+	attributeCount : UINT;
+	attributeIndex : UDINT;
+	attributeEntry : UINT;
+	attributeEntryNameLength : BYTE;
+	attributeEntryValueLength : BYTE;
+	attributeEntryValueLengthUDint : UDINT;
+	pAttributeFoundName : POINTER TO BYTE;
+	pAttributeFoundValue : POINTER TO BYTE;
+	i : UDINT;
+	match : BOOL;
+END_VAR
+VAR CONSTANT
+	SYMBOL_INFO_NAME_LENGTH_OFFSET : UINT := 16#18;
+	SYMBOL_INFO_DATATYPE_LENGTH_OFFSET : UINT := 16#1A;
+	SYMBOL_INFO_COMMENT_LENGTH_OFFSET : UINT := 16#1C;
+	SYMBOL_INFO_DATA_OFFSET : UINT := 16#1E;
+	SYMBOL_INFO_FLAG_SIZE : UINT := 4;
+	SYMBOL_INFO_GUID_SIZE : UINT := 11;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[REPEAT
+	
+	// ------------------------------------------------
+	// Get the application info object
+	// ------------------------------------------------	
+	IF TwinCAT_SystemInfoVarList._AppInfo.ObjId = 0 THEN 
+		EXIT; 
+	END_IF
+
+	// get the application info object
+	hr := FW_ObjMgr_GetObjectInstance(TwinCAT_SystemInfoVarList._AppInfo.ObjId, TC_GLOBAL_IID_LIST.IID_ITcIecApplicationInfo, ADR(appInfo));
+	IF FAILED(hr) THEN 
+		EXIT; 
+	END_IF
+	
+	// ------------------------------------------------
+	// Get the symbol infomation so we can get the type
+	// ------------------------------------------------
+	
+	// get the symbol info length
+	hr := appInfo.GetAdsSymbolInfo(SymbolName, symbolInfoLength, 0);
+	IF symbolInfoLength = 0 THEN 
+		EXIT; 
+	END_IF
+	
+	// make array to hold the symbol info
+	pSymbolInfo := __NEW(BYTE,symbolInfoLength);
+	
+	// get symbol info (so that we can get the symbol datatype name
+	hr := appInfo.GetAdsSymbolInfo(SymbolName, symbolInfoLength, pSymbolInfo);
+	IF FAILED(hr) THEN 
+		EXIT; 
+	END_IF
+	
+	// ------------------------------------------------
+	// Get the symbol datatype from the symbol info
+	// ------------------------------------------------	
+	
+	// get the length of the symbol name and datatype name from the symbol info		
+	memcpy(ADR(symbolInfoNameLength),ADR(pSymbolInfo[SYMBOL_INFO_NAME_LENGTH_OFFSET]),SIZEOF(UINT));
+	memcpy(ADR(symbolInfoDatatypeLength),ADR(pSymbolInfo[SYMBOL_INFO_DATATYPE_LENGTH_OFFSET]),SIZEOF(UINT));
+	memcpy(ADR(symbolInfoCommentLength),ADR(pSymbolInfo[SYMBOL_INFO_COMMENT_LENGTH_OFFSET]),SIZEOF(UINT));
+	
+	// check we have a name (__NEW symbols cannot be used)
+	IF symbolInfoNameLength = 0 THEN 
+		EXIT; 
+	END_IF
+	
+	// calculate the offset to the datatype name as this depends on the symbol name
+	attributeCountOffset := SYMBOL_INFO_DATA_OFFSET 
+		+ symbolInfoNameLength + 1
+		+ symbolInfoDatatypeLength + 1 
+		+ symbolInfoCommentLength + 1
+		+ SYMBOL_INFO_FLAG_SIZE
+		+ SYMBOL_INFO_GUID_SIZE + 1;
+
+	// ---------------------------------------------------
+	// find the start of the attribute data
+	// ---------------------------------------------------
+
+	// get attribute count
+	MEMCPY(ADR(attributeCount), ADR(pSymbolInfo[attributeCountOffset]), SIZEOF(UINT));
+	
+	attributeIndex := attributeCountOffset + SIZEOF(UINT);	
+	attributeEntry := 1;
+	WHILE attributeEntry <= attributeCount  DO	
+	
+		attributeEntryNameLength :=  pSymbolInfo[attributeIndex] + 1;
+		attributeIndex := attributeIndex + SIZEOF(BYTE);
+		
+		attributeEntryValueLength :=  pSymbolInfo[attributeIndex] + 1;
+		attributeIndex := attributeIndex + SIZEOF(BYTE);
+		
+		// make array to hold the attribute name
+		pAttributeFoundName := __NEW(BYTE,attributeEntryNameLength);
+		memcpy(pAttributeFoundName,ADR(pSymbolInfo[attributeIndex]),attributeEntryNameLength);
+		attributeIndex := attributeIndex + attributeEntryNameLength;
+		
+		IF attributeEntryValueLength = 255 THEN
+			// the length is only valid up to 255, therefore we need to find the next null to locate the end of the string. 
+			FOR i := attributeIndex TO symbolInfoLength - 1 DO
+				IF pSymbolInfo[i] = 0 THEN 
+					attributeEntryValueLengthUdint := i - attributeIndex;
+					EXIT;
+				END_IF
+			END_FOR
+		ELSE 
+			attributeEntryValueLengthUdint := BYTE_TO_UDINT(attributeEntryValueLength);
+		END_IF
+		
+		// make array to hold the attribute value
+		pAttributeFoundValue := __NEW(BYTE,attributeEntryValueLengthUdint);
+		memcpy(pAttributeFoundValue,ADR(pSymbolInfo[attributeIndex]),attributeEntryValueLengthUdint);
+		attributeIndex := attributeIndex + attributeEntryValueLengthUdint + 1;
+		
+		match := TRUE;
+		FOR i := 0 TO MIN(SIZEOF(AttributeName), attributeEntryNameLength) - 1 DO
+			IF AttributeName[i] <> pAttributeFoundName[i] THEN
+				match := FALSE;
+				EXIT;
+			END_IF
+			IF AttributeName[i]=0 OR pAttributeFoundName[i]=0 THEN
+				EXIT;
+			END_IF
+		END_FOR
+		
+		IF match THEN
+			IF DestinationSize < attributeEntryValueLengthUdint THEN
+				EXIT;
+			END_IF
+			memset(DestinationAddress,0,DestinationSize);
+			memcpy(DestinationAddress,pAttributeFoundValue,attributeEntryValueLengthUdint);
+			TryReadAttributeValue := TRUE;
+			EXIT;			
+		END_IF
+		
+		__DELETE(pAttributeFoundName);
+		__DELETE(pAttributeFoundValue);
+		
+		// next entry
+		attributeEntry := attributeEntry + 1;
+	
+	END_WHILE	
+	
+	// if here is reached then there was no match.
+	
+UNTIL TRUE // this allows us to exit out of the repeat at any point previous with an exit statement.
+END_REPEAT
+
+// tidy app info before leaving
+FW_SafeRelease(ADR(appInfo));
+
+// tidy the symbol info before leaving
+IF pSymbolInfo <> 0 THEN
+	__DELETE(pSymbolInfo);
+END_IF
+
+IF pAttributeFoundName <> 0 THEN
+	__DELETE(pAttributeFoundName);
+END_IF
+
+IF pAttributeFoundValue <> 0 THEN
+	__DELETE(pAttributeFoundValue);
+END_IF
+
+RETURN;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

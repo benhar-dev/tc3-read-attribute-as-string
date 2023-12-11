@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="MAIN" Id="{80cff89d-4624-4752-9e14-33a99f1b6cd6}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+	{attribute 'foobar' := 'helloworld'}
+	myBool : BOOL;
+	
+	found : BOOL;	
+	attributeValue : STRING(80);
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[found := TryReadAttributeValue('Main.myBool','foobar', adr(attributeValue), sizeof(attributeValue));]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
